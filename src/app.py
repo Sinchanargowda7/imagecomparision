@@ -1,145 +1,174 @@
 import streamlit as st
 from PIL import Image
-from engine import ImageComparator
+from engine import RealTimeSearchEngine
 
-# --- 1. Helper: Human Score Conversion ---
+# --- 1. Helper: Human Score ---
 def get_human_score(raw_score):
-    """
-    Converts Raw AI Score (Cosine Sim) to Human Percentage.
-    REALITY CHECK: 
-    - 0.80+ is usually an exact duplicate or extremely close match.
-    - 0.60-0.80 is a strong semantic match (Same object, different angle).
-    - < 0.40 is usually a non-match.
-    """
-    # We set the "Floor" to 0.40. This is calibrated for CLIP ViT-L-14.
-    threshold = 0.40 
-
+    threshold = 0.40
     if raw_score < threshold:
-        # If score is very low, we show a low percentage
         return max(0, (raw_score / threshold) * 10)
-    
-    # Scale the valid range (0.40 to 1.0) to (0% to 100%)
     normalized = (raw_score - threshold) / (1 - threshold)
     return normalized * 100
 
 # --- 2. Page Config ---
-st.set_page_config(page_title="Visual Matcher Pro", page_icon="👁️", layout="wide")
+st.set_page_config(page_title="Real-Time Visual Search", page_icon="👁️", layout="wide")
 
-# --- 3. Load Engine (Cached) ---
+# --- 3. Initialize Session State for Camera ---
+if "camera_active" not in st.session_state:
+    st.session_state.camera_active = False
+
+# --- 4. Load Engine (Cached) ---
 @st.cache_resource
 def load_engine():
-    return ImageComparator()
+    return RealTimeSearchEngine()
 
 try:
-    comparator = load_engine()
+    engine = load_engine()
 except Exception as e:
-    st.error("Could not load the AI Model. Check logs.")
+    st.error("Engine failed to start. Check logs.")
     st.stop()
 
-# --- 4. UI Layout ---
-st.title("👁️ Smart Image Comparator")
-st.markdown("### Compare 1 Reference vs Multiple Candidates")
-st.info("System Status: Calibrated for High-Accuracy Matching.")
-
-col_ref, col_cand = st.columns([1, 2])
-
-# --- ALLOW ALL IMAGE TYPES ---
-all_image_types = ["jpg", "jpeg", "png", "webp", "jfif", "bmp", "tiff", "tif", "gif", "ico"]
-
-# Inputs
-with col_ref:
-    st.header("1. Reference")
-    ref_file = st.file_uploader("Upload Target Image", type=all_image_types, key="ref_uploader")
-    if ref_file:
-        ref_image = Image.open(ref_file)
-        st.image(ref_image, caption="Query Object", width=300)
-
-with col_cand:
-    st.header("2. Candidates (Select 5+)")
-    cand_files = st.file_uploader("Upload Database Images", type=all_image_types, accept_multiple_files=True, key="cand_uploader")
+# --- 5. SIDEBAR: Knowledge Base ---
+with st.sidebar:
+    st.header("🧠 Memory Bank")
+    st.caption(f"Status: {len(engine.image_db)} images indexed")
     
-    candidate_images = []
-    if cand_files:
-        # Show mini grid
-        cols = st.columns(5)
-        for i, file in enumerate(cand_files):
-            try:
-                img = Image.open(file)
-                candidate_images.append(img)
-                with cols[i % 5]:
-                    # --- FIXED: Used 'use_container_width' to remove yellow warnings ---
-                    st.image(img, use_container_width=True) 
-            except Exception as e:
-                st.error(f"Error loading {file.name}")
+    with st.expander("📂 Manage Database", expanded=False):
+        st.write("### Add New Objects")
+        new_files = st.file_uploader("Upload images to learn", accept_multiple_files=True)
+        
+        if new_files:
+            if st.button("⚡ Memorize These Images", type="primary"):
+                images = []
+                for f in new_files:
+                    try:
+                        img = Image.open(f)
+                        img.load()
+                        images.append(img)
+                    except:
+                        st.warning(f"Skipped '{f.name}'")
 
-# --- 5. Execution Logic ---
-st.write("---")
+                if images:
+                    with st.spinner("Learning new patterns..."):
+                        engine.add_to_index(images)
+                    st.success(f"Added {len(images)} new items!")
+                    st.rerun()
+        
+        st.divider()
+        
+        col_save, col_clear = st.columns(2)
+        with col_save:
+            if st.button("💾 Save"):
+                engine.save_db()
+                st.toast("Database saved!", icon="💾")
+        with col_clear:
+            if st.button("🗑️ Reset"):
+                engine.image_db = []
+                engine.vector_db = None
+                st.warning("Memory wiped.")
+                st.rerun()
 
-if st.button("🚀 Run Comparison", type="primary"):
-    if ref_file and cand_files:
-        with st.spinner("🧠 Analyzing Features..."):
-            
-            # A. Run AI Analysis
-            best_idx, best_raw, all_raw_scores = comparator.find_best_match(ref_image, candidate_images)
-            
-            # B. Gap Analysis (Checking for confusion)
-            sorted_scores = sorted(all_raw_scores, reverse=True)
-            winner_score = sorted_scores[0]
-            runner_up = sorted_scores[1] if len(sorted_scores) > 1 else 0
-            gap = winner_score - runner_up
-            
-            # C. Human Score Calculation
-            human_score = get_human_score(best_raw)
-            
-            # --- DISPLAY RESULT ---
-            st.subheader("🏆 Verdict")
-            
-            r_col1, r_col2 = st.columns([1, 2])
-            
-            with r_col1:
-                st.image(candidate_images[best_idx], width=300, caption=f"Winner (Img #{best_idx+1})")
-            
-            with r_col2:
-                # LOGIC: 
-                # If we have multiple very high scores, it's not "Ambiguous" (bad), 
-                # it's "Multiple Matches" (good).
-                
-                if human_score > 80:
-                    st.success(f"✅ **EXACT MATCH FOUND**")
-                    st.markdown(f"**Confidence:** {human_score:.1f}%")
-                    
-                    if gap < 0.05 and len(candidate_images) > 1:
-                         st.info(f"ℹ️ Note: Several other images also matched closely.")
-                    else:
-                        st.write("The system is confident this is the specific object.")
+# --- 6. MAIN PAGE: Search Interface ---
+st.title("👁️ Real-Time Visual Search")
 
-                elif human_score > 60:
-                    st.success(f"🔹 **STRONG MATCH**")
-                    st.markdown(f"**Confidence:** {human_score:.1f}%")
-                    st.write("This is likely the same object or category.")
-                    
-                    if gap < 0.05:
-                        st.warning("⚠️ Multiple candidates look very similar to this one.")
-                
-                else:
-                    st.error("❌ **NO CLEAR MATCH**")
-                    st.write("The closest image is still quite different.")
+with st.expander("ℹ️ How to use"):
+    st.write("""
+    1. **Add Images:** Open the Sidebar menu to upload images you want the AI to remember.
+    2. **Search:** Use the **Start Camera** button or **Upload** tab to find a match.
+    3. **Results:** The AI will instantly find the most similar object from its memory.
+    """)
 
-                st.caption(f"Raw Score: {best_raw:.3f} | Margin over Runner-up: {gap:.3f}")
+tab_cam, tab_up = st.tabs(["📷 Live Camera", "📂 Upload Image"])
 
-            # --- Details Table ---
-            with st.expander("📊 See Analysis for All Candidates"):
-                for i, score in enumerate(all_raw_scores):
-                    h_s = get_human_score(score)
-                    
-                    # Visual Formatting
-                    if i == best_idx:
-                        label = f"🏆 WINNER (Img {i+1})"
-                    else:
-                        label = f"Candidate {i+1}"
-                        
-                    st.write(f"**{label}**")
-                    st.progress(int(h_s), text=f"Match: {h_s:.1f}% (Raw: {score:.3f})")
+query_image = None
 
+# --- TAB 1: Camera (With Start/Stop Buttons) ---
+with tab_cam:
+    st.write("### Camera Controls")
+    
+    # Create two columns for the buttons
+    col_btn_start, col_btn_stop, col_spacer = st.columns([1, 1, 3])
+    
+    with col_btn_start:
+        if st.button("Start Camera", type="primary", use_container_width=True):
+            st.session_state.camera_active = True
+            st.rerun() # Force reload to show camera immediately
+            
+    with col_btn_stop:
+        if st.button("Stop Camera", use_container_width=True):
+            st.session_state.camera_active = False
+            st.rerun()
+
+    st.write("---")
+
+    # Only show the camera widget if the state is Active
+    if st.session_state.camera_active:
+        camera_file = st.camera_input("Take a photo")
+        if camera_file:
+            query_image = Image.open(camera_file)
     else:
-        st.warning("⚠️ Please upload both a Reference image and Candidate images.")
+        st.info("Camera is currently **OFF**. Press 'Start Camera' to begin.")
+
+# --- TAB 2: File Upload ---
+with tab_up:
+    upload_file = st.file_uploader("Choose an image to search for...", label_visibility="visible")
+    if upload_file:
+        try:
+            query_image = Image.open(upload_file)
+        except:
+            st.error("Invalid file type.")
+
+# --- 7. Results Section ---
+if query_image:
+    st.divider()
+    
+    if len(engine.image_db) == 0:
+        st.warning("⚠️ **Memory is Empty!** The AI doesn't know any images yet. Please open the Sidebar and add some images first.")
+    else:
+        # Search Logic
+        best_idx, best_raw, all_scores = engine.search(query_image)
+        
+        # Scoring Logic
+        human_score = get_human_score(best_raw)
+        sorted_scores = sorted(all_scores, reverse=True)
+        winner_score = sorted_scores[0]
+        runner_up = sorted_scores[1] if len(sorted_scores) > 1 else 0
+        gap = winner_score - runner_up
+        match_img = engine.image_db[best_idx]
+
+        # Display Logic
+        c1, c2 = st.columns([1, 2])
+        
+        with c1:
+            st.write("#### 🔎 Your Query")
+            st.image(query_image, width=300, caption="What you looking for")
+            
+        with c2:
+            st.write("#### 🎯 AI Result")
+            
+            container = st.container(border=True)
+            with container:
+                r_col_img, r_col_txt = st.columns([1, 2])
+                
+                with r_col_img:
+                    st.image(match_img, use_container_width=True)
+                
+                with r_col_txt:
+                    if human_score > 80:
+                        st.success(f"**EXACT MATCH** ({human_score:.1f}%)")
+                        st.caption("The AI is highly confident.")
+                    elif human_score > 60:
+                        st.info(f"**LIKELY MATCH** ({human_score:.1f}%)")
+                        st.caption("Looks very similar.")
+                    else:
+                        st.error(f"**NO MATCH** ({human_score:.1f}%)")
+                        st.caption("Nothing in the database looks like this.")
+                    
+                    if gap < 0.05 and len(engine.image_db) > 1:
+                        st.warning("⚠️ Ambiguous: Multiple similar items found.")
+        
+        with st.expander("📊 View All Candidates"):
+            for i, score in enumerate(all_scores):
+                h_s = get_human_score(score)
+                st.write(f"**Item #{i+1}**")
+                st.progress(int(h_s), text=f"{h_s:.1f}% Similarity")
