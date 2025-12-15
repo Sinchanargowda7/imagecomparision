@@ -25,3 +25,4 @@ Desktop.ini
 
 # Mac specific (just in case)
 .DS_Store
+vector_db.pkl
