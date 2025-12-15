@@ -1,0 +1,5 @@
+sentence-transformers==2.2.2
+Pillow==10.0.0
+scikit-learn
+numpy
+streamlit

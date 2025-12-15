@@ -1,0 +1,27 @@
+# --- Python Basics ---
+__pycache__/
+*.pyc
+
+# --- Virtual Environments ---
+# This is crucial so you don't upload your local libraries
+venv/
+env/
+.venv/
+
+# --- Environment Variables ---
+# NEVER share secrets/API keys
+.env
+
+# --- IDE Settings ---
+# Ignore local editor configuration
+.vscode/
+.idea/
+
+# --- Operating System Files ---
+# Windows specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Mac specific (just in case)
+.DS_Store
