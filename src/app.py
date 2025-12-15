@@ -2,124 +2,144 @@ import streamlit as st
 from PIL import Image
 from engine import ImageComparator
 
-# --- 1. Helper Function: Smart Human Scoring ---
+# --- 1. Helper: Human Score Conversion ---
 def get_human_score(raw_score):
     """
-    Converts 'Robot Math' (Cosine Similarity) into 'Human %'.
-    
-    The AI naturally sees all real-world photos as ~50% similar because 
-    they share lighting, shapes, and physics. We need to 'floor' this.
+    Converts Raw AI Score (Cosine Sim) to Human Percentage.
+    REALITY CHECK: 
+    - 0.80+ is usually an exact duplicate or extremely close match.
+    - 0.60-0.80 is a strong semantic match (Same object, different angle).
+    - < 0.40 is usually a non-match.
     """
-    # Anything below 0.60 raw score is effectively a "mismatch" for humans.
-    threshold = 0.60 
+    # We set the "Floor" to 0.40. This is calibrated for CLIP ViT-L-14.
+    threshold = 0.40 
 
     if raw_score < threshold:
-        # If it's below 0.60, crush the score down to 0-10% range.
-        # This fixes the issue of "Random images showing 50%"
+        # If score is very low, we show a low percentage
         return max(0, (raw_score / threshold) * 10)
     
-    # If it's above 0.60, scale it to spread across 0-100%
-    # Example: Raw 0.80 -> Human 50% (Similar category)
-    # Example: Raw 0.95 -> Human 95% (Exact Match)
+    # Scale the valid range (0.40 to 1.0) to (0% to 100%)
     normalized = (raw_score - threshold) / (1 - threshold)
     return normalized * 100
 
-# --- 2. Page Configuration ---
-st.set_page_config(page_title="Smart Visual Matcher", page_icon="🎯", layout="wide")
+# --- 2. Page Config ---
+st.set_page_config(page_title="Visual Matcher Pro", page_icon="👁️", layout="wide")
 
-# --- 3. Load the AI Engine (Cached) ---
+# --- 3. Load Engine (Cached) ---
 @st.cache_resource
 def load_engine():
-    # This loads the heavy 'L-14' model you downloaded
     return ImageComparator()
 
-comparator = load_engine()
+try:
+    comparator = load_engine()
+except Exception as e:
+    st.error("Could not load the AI Model. Check logs.")
+    st.stop()
 
-# --- 4. Main UI Layout ---
-st.title("🎯 Smart Image Recognition")
-st.markdown("### Find the best match in a crowd.")
-st.info("Logic Update: Scores are now adjusted so 'random' images show low % (0-10%) instead of 50%.")
+# --- 4. UI Layout ---
+st.title("👁️ Smart Image Comparator")
+st.markdown("### Compare 1 Reference vs Multiple Candidates")
+st.info("System Status: Calibrated for High-Accuracy Matching.")
 
-st.markdown("---")
-
-# Split screen into 2 columns
 col_ref, col_cand = st.columns([1, 2])
 
-# Allowed file types
-allowed_types = ["jpg", "png", "jpeg", "webp", "jfif", "bmp", "tiff"]
+# --- ALLOW ALL IMAGE TYPES ---
+all_image_types = ["jpg", "jpeg", "png", "webp", "jfif", "bmp", "tiff", "tif", "gif", "ico"]
 
-# --- Left Column: Reference ---
+# Inputs
 with col_ref:
-    st.header("1. Reference Image")
-    st.write("The object you are looking for:")
-    ref_file = st.file_uploader("Upload Reference", type=allowed_types, key="ref")
-    
+    st.header("1. Reference")
+    ref_file = st.file_uploader("Upload Target Image", type=all_image_types, key="ref_uploader")
     if ref_file:
         ref_image = Image.open(ref_file)
         st.image(ref_image, caption="Query Object", width=300)
 
-# --- Right Column: Candidates ---
 with col_cand:
-    st.header("2. Candidate Images")
-    st.write("The database to search through:")
-    cand_files = st.file_uploader("Upload Candidates (Select multiple)", type=allowed_types, accept_multiple_files=True, key="candidates")
+    st.header("2. Candidates (Select 5+)")
+    cand_files = st.file_uploader("Upload Database Images", type=all_image_types, accept_multiple_files=True, key="cand_uploader")
     
-    # Preview logic
+    candidate_images = []
     if cand_files:
-        candidate_images = []
-        # Create a mini grid to show uploads
-        grid_cols = st.columns(5) 
-        for idx, file in enumerate(cand_files):
-            img = Image.open(file)
-            candidate_images.append(img)
-            # Show small thumbnail in grid
-            with grid_cols[idx % 5]:
-                st.image(img, width=100)
+        # Show mini grid
+        cols = st.columns(5)
+        for i, file in enumerate(cand_files):
+            try:
+                img = Image.open(file)
+                candidate_images.append(img)
+                with cols[i % 5]:
+                    # --- FIXED: Used 'use_container_width' to remove yellow warnings ---
+                    st.image(img, use_container_width=True) 
+            except Exception as e:
+                st.error(f"Error loading {file.name}")
 
 # --- 5. Execution Logic ---
-st.markdown("---")
+st.write("---")
 
-if st.button("🚀 Find Best Match", type="primary"):
+if st.button("🚀 Run Comparison", type="primary"):
     if ref_file and cand_files:
-        with st.spinner("🧠 Analyzing vectors and textures..."):
+        with st.spinner("🧠 Analyzing Features..."):
             
-            # 1. Run the AI (Get raw robot scores)
+            # A. Run AI Analysis
             best_idx, best_raw, all_raw_scores = comparator.find_best_match(ref_image, candidate_images)
             
-            # 2. Convert to Human Score
+            # B. Gap Analysis (Checking for confusion)
+            sorted_scores = sorted(all_raw_scores, reverse=True)
+            winner_score = sorted_scores[0]
+            runner_up = sorted_scores[1] if len(sorted_scores) > 1 else 0
+            gap = winner_score - runner_up
+            
+            # C. Human Score Calculation
             human_score = get_human_score(best_raw)
             
-            # --- DISPLAY RESULTS ---
-            st.subheader("🏆 The Verdict")
+            # --- DISPLAY RESULT ---
+            st.subheader("🏆 Verdict")
             
-            # Layout for the winner
-            win_col, text_col = st.columns([1, 2])
+            r_col1, r_col2 = st.columns([1, 2])
             
-            with win_col:
-                st.image(candidate_images[best_idx], width=300, caption=f"Winning Image (Index {best_idx+1})")
+            with r_col1:
+                st.image(candidate_images[best_idx], width=300, caption=f"Winner (Img #{best_idx+1})")
             
-            with text_col:
-                st.metric("Match Confidence", f"{human_score:.1f}%", delta=f"Raw AI Score: {best_raw:.3f}")
+            with r_col2:
+                # LOGIC: 
+                # If we have multiple very high scores, it's not "Ambiguous" (bad), 
+                # it's "Multiple Matches" (good).
                 
-                # Dynamic feedback based on Human Score
-                if human_score > 85:
-                    st.success("✅ **EXACT MATCH:** This is the same object.")
-                elif human_score > 60:
-                    st.warning("⚠️ **SIMILAR:** Same category (e.g., both are dogs), but likely different objects.")
-                else:
-                    st.error("❌ **NO MATCH:** The closest image is still too different.")
+                if human_score > 80:
+                    st.success(f"✅ **EXACT MATCH FOUND**")
+                    st.markdown(f"**Confidence:** {human_score:.1f}%")
+                    
+                    if gap < 0.05 and len(candidate_images) > 1:
+                         st.info(f"ℹ️ Note: Several other images also matched closely.")
+                    else:
+                        st.write("The system is confident this is the specific object.")
 
-            # --- Detailed Breakdown Table ---
-            st.write("---")
+                elif human_score > 60:
+                    st.success(f"🔹 **STRONG MATCH**")
+                    st.markdown(f"**Confidence:** {human_score:.1f}%")
+                    st.write("This is likely the same object or category.")
+                    
+                    if gap < 0.05:
+                        st.warning("⚠️ Multiple candidates look very similar to this one.")
+                
+                else:
+                    st.error("❌ **NO CLEAR MATCH**")
+                    st.write("The closest image is still quite different.")
+
+                st.caption(f"Raw Score: {best_raw:.3f} | Margin over Runner-up: {gap:.3f}")
+
+            # --- Details Table ---
             with st.expander("📊 See Analysis for All Candidates"):
-                for i, raw_score in enumerate(all_raw_scores):
-                    h_score = get_human_score(raw_score)
+                for i, score in enumerate(all_raw_scores):
+                    h_s = get_human_score(score)
                     
-                    # Highlight the winner
-                    prefix = "🏆 WINNER" if i == best_idx else f"Candidate {i+1}"
-                    
-                    st.write(f"**{prefix}**")
-                    st.progress(int(h_score), text=f"Human Score: {h_score:.1f}% (Raw: {raw_score:.3f})")
+                    # Visual Formatting
+                    if i == best_idx:
+                        label = f"🏆 WINNER (Img {i+1})"
+                    else:
+                        label = f"Candidate {i+1}"
+                        
+                    st.write(f"**{label}**")
+                    st.progress(int(h_s), text=f"Match: {h_s:.1f}% (Raw: {score:.3f})")
 
     else:
-        st.warning("⚠️ Please upload a Reference Image AND at least one Candidate Image.")
+        st.warning("⚠️ Please upload both a Reference image and Candidate images.")
