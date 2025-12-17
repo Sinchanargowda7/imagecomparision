@@ -1,82 +1,123 @@
 import os
-import pickle
-import numpy as np
-from sentence_transformers import SentenceTransformer, util
+import uuid
+import time
+from pinecone import Pinecone, ServerlessSpec
+from sentence_transformers import SentenceTransformer
+from transformers import BlipProcessor, BlipForConditionalGeneration
 from PIL import Image
+from typing import List, Tuple
 
-class RealTimeSearchEngine:
-    def __init__(self, model_name='clip-ViT-L-14', db_path='vector_db.pkl'):
-        """
-        Initializes the AI with a persistent memory (Vector Database).
-        """
-        print(f"⏳ Loading Real-Time AI ({model_name})...")
+class EnterpriseSearchEngine:
+    def __init__(self):
+        print(f"🚀 [System] Initializing Cloud Memory (Pinecone)...")
+        
+        # --- CONFIGURATION (PASTE KEY HERE) ---
+        self.PINECONE_API_KEY = "pcsk_4q3XVV_UqhTyMduR97ZFyVoG15Tc6cKe4Xeiw3R8SeTczT6DMRxK7Q8nCFQruYvDewcdMs" 
+        self.INDEX_NAME = "visual-search-prod"
+        self.img_folder = "stored_images"
+        
+        # 1. Setup Local Image Cache (For display only)
+        # We store the PIXELS locally, but the MATH goes to the cloud.
+        if not os.path.exists(self.img_folder):
+            os.makedirs(self.img_folder)
+
+        # 2. Connect to Pinecone Cloud
+        self.pc = Pinecone(api_key=self.PINECONE_API_KEY)
+        
+        # Check if index exists, if not create it
+        existing_indexes = [i.name for i in self.pc.list_indexes()]
+        
+        if self.INDEX_NAME not in existing_indexes:
+            print(f"☁️ Creating new Cloud Index: {self.INDEX_NAME}...")
+            try:
+                self.pc.create_index(
+                    name=self.INDEX_NAME,
+                    dimension=768, # CLIP ViT-L-14 outputs 768 dimensions
+                    metric="cosine",
+                    spec=ServerlessSpec(cloud="aws", region="us-east-1")
+                )
+                # Wait for cloud initialization
+                time.sleep(10)
+            except Exception as e:
+                print(f"⚠️ Index creation warning: {e}")
+            
+        self.index = self.pc.Index(self.INDEX_NAME)
+
+        # 3. Load AI Models
+        print("   - Loading Visual Core (CLIP)...")
+        self.search_model = SentenceTransformer('clip-ViT-L-14')
+        
+        print("   - Loading Caption Core (BLIP)...")
+        self.caption_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+        self.caption_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+        
+        # Get stats
         try:
-            self.model = SentenceTransformer(model_name)
-            self.db_path = db_path
-            self.image_db = []      # Stores the actual images
-            self.vector_db = None   # Stores the mathematical embeddings
+            stats = self.index.describe_index_stats()
+            count = stats.total_vector_count
+        except:
+            count = 0
             
-            # Load existing database if it exists
-            self.load_db()
-            print("✅ Model & Database loaded.")
-        except Exception as e:
-            print(f"❌ Error loading model: {e}")
-            raise e
+        print(f"✅ [System] Cloud Online. Indexed Vectors: {count}")
 
-    def add_to_index(self, images):
-        """
-        Encodes images ONCE and saves them to memory.
-        This makes future searches instant.
-        """
-        if not images: return
+    def ingest_images(self, images: List[Image.Image]) -> int:
+        if not images: return 0
         
-        print(f"⚡ Indexing {len(images)} new items...")
+        # 1. Compute Embeddings
+        embeddings = self.search_model.encode(images).tolist()
         
-        # 1. Encode all images at once (Batch processing)
-        new_embeddings = self.model.encode(images, convert_to_tensor=True)
-        new_embeddings = new_embeddings.cpu().numpy() # Move to CPU for storage
-
-        # 2. Add to local memory
-        if self.vector_db is None:
-            self.vector_db = new_embeddings
-            self.image_db = images
-        else:
-            self.vector_db = np.vstack((self.vector_db, new_embeddings))
-            self.image_db.extend(images)
+        vectors_to_upload = []
+        
+        # 2. Process Batch
+        for i, img in enumerate(images):
+            # Generate unique ID
+            file_id = str(uuid.uuid4())
+            filename = f"{file_id}.png"
+            path = os.path.join(self.img_folder, filename)
             
-        print(f"✅ Knowledge Base now has {len(self.image_db)} items.")
-
-    def search(self, query_img):
-        """
-        Real-time search: Encodes ONLY the query and compares against Memory.
-        Returns: Best Match Index, Best Score, and All Scores.
-        """
-        if self.vector_db is None or len(self.image_db) == 0:
-            return -1, 0.0, []
-
-        # 1. Encode ONLY the query (Fast!)
-        query_emb = self.model.encode(query_img, convert_to_tensor=True)
+            # Save pixels locally (cache)
+            img.save(path, format="PNG")
+            
+            # Prepare Vector for Cloud (ID, Vector, Metadata)
+            vectors_to_upload.append({
+                "id": file_id,
+                "values": embeddings[i],
+                "metadata": {"path": path}
+            })
+            
+        # 3. Upload to Cloud
+        # Upsert: Update if exists, Insert if new
+        self.index.upsert(vectors=vectors_to_upload)
         
-        # 2. Compare against the entire database instantly
-        scores = util.cos_sim(query_emb, self.vector_db)[0]
+        return len(vectors_to_upload)
 
-        # 3. Find best match
-        best_score_idx = scores.argmax().item()
-        best_score = scores[best_score_idx].item()
+    def search_visual(self, query_img: Image.Image) -> Tuple[int, float, dict]:
+        # 1. Vector Search
+        query_vec = self.search_model.encode(query_img).tolist()
         
-        return best_score_idx, best_score, scores.tolist()
+        # Query Pinecone
+        results = self.index.query(
+            vector=query_vec,
+            top_k=1,
+            include_metadata=True
+        )
+        
+        # Check results
+        if not results['matches']:
+            return -1, 0.0, None
 
-    def save_db(self):
-        """Saves the memory to a file so we don't lose it on restart."""
-        with open(self.db_path, 'wb') as f:
-            pickle.dump({'vectors': self.vector_db, 'images': self.image_db}, f)
-        print("💾 Database Saved to disk.")
+        match = results['matches'][0]
+        score = match['score'] # Pinecone returns Cosine Similarity (0-1)
+        metadata = match['metadata']
+        
+        return 0, score, metadata
 
-    def load_db(self):
-        """Loads memory from file."""
-        if os.path.exists(self.db_path):
-            with open(self.db_path, 'rb') as f:
-                data = pickle.load(f)
-                self.vector_db = data['vectors']
-                self.image_db = data['images']
-            print(f"📂 Restored {len(self.image_db)} items from disk.")
+    def generate_caption(self, query_img: Image.Image) -> str:
+        inputs = self.caption_processor(query_img, return_tensors="pt")
+        out = self.caption_model.generate(**inputs, max_new_tokens=20)
+        caption = self.caption_processor.decode(out[0], skip_special_tokens=True)
+        return caption.capitalize()
+
+    def persist_state(self):
+        # Cloud auto-saves. No local pickle needed.
+        pass

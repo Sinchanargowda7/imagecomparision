@@ -4,3 +4,10 @@ scikit-learn
 numpy
 streamlit
 torch
+fastapi 
+uvicorn 
+python-multipart 
+faiss-cpu 
+requests
+pinecone
+google-search-results
