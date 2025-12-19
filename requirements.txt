@@ -11,3 +11,7 @@ faiss-cpu
 requests
 pinecone
 google-search-results
+cmake
+dlib
+ultralytics
+face_recognition

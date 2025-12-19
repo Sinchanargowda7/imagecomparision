@@ -5,24 +5,31 @@ import io
 import uvicorn
 import base64
 import os
+import uuid # Needed for temp file
 
-app = FastAPI(title="Visual Recognition API (Pinecone Edition)")
+app = FastAPI(title="Visual Recognition API (Hybrid)")
 
-# Initialize Engine (Connects to Pinecone)
 engine = EnterpriseSearchEngine()
 
 def bytes_to_image(img_bytes) -> Image.Image:
     return Image.open(io.BytesIO(img_bytes)).convert("RGB")
 
+def get_base64(path):
+    if os.path.exists(path):
+        with open(path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode()
+    return None
+
 @app.get("/health")
 def health_check():
-    # Ask Pinecone for status
     try:
         stats = engine.index.describe_index_stats()
         count = stats.total_vector_count
+        faces = len(engine.known_face_encodings)
     except:
-        count = "Unknown (Connecting...)"
-    return {"status": "operational", "vectors_indexed": count}
+        count = "Unknown"
+        faces = 0
+    return {"status": "operational", "vectors": count, "faces_loaded": faces}
 
 @app.post("/ingest")
 async def ingest_endpoint(files: list[UploadFile] = File(...)):
@@ -30,35 +37,41 @@ async def ingest_endpoint(files: list[UploadFile] = File(...)):
     for file in files:
         content = await file.read()
         images.append(bytes_to_image(content))
-    
     count = engine.ingest_images(images)
     return {"message": "Ingestion successful", "batch_size": count}
 
 @app.post("/predict")
 async def predict_endpoint(file: UploadFile = File(...)):
+    # 1. Save temp file (Needed for Face Recognition library)
+    temp_filename = f"temp_{uuid.uuid4()}.jpg"
     content = await file.read()
+    with open(temp_filename, "wb") as buffer:
+        buffer.write(content)
+        
     query_image = bytes_to_image(content)
     
-    # 1. Auto-Caption (BLIP)
-    auto_caption = engine.generate_caption(query_image)
+    # 2. Run Brains
+    caption = engine.generate_caption(query_image)
     
-    # 2. Visual Search (Pinecone)
-    _, score, metadata = engine.search_visual(query_image)
-    
-    match_data = None
-    if metadata and 'path' in metadata:
-        # Retrieve the image from local cache using the path stored in Cloud Metadata
-        image_path = metadata['path']
+    # A. Face Search
+    face_result = engine.search_face(temp_filename)
+    if face_result:
+        face_result['base64'] = get_base64(face_result['metadata']['path'])
         
-        if os.path.exists(image_path):
-            with open(image_path, "rb") as img_file:
-                # Convert to Base64 for the UI
-                encoded_string = base64.b64encode(img_file.read()).decode()
-                match_data = {"base64": encoded_string, "score": score}
+    # B. Visual Search (CLIP) - Always run as fallback
+    _, score, metadata = engine.search_visual(query_image)
+    visual_result = None
+    if metadata:
+        visual_result = {"score": score, "base64": get_base64(metadata['path'])}
+
+    # Cleanup
+    if os.path.exists(temp_filename):
+        os.remove(temp_filename)
 
     return {
-        "caption": auto_caption,
-        "visual_match": match_data
+        "caption": caption,
+        "face_match": face_result,
+        "visual_match": visual_result
     }
 
 if __name__ == "__main__":
