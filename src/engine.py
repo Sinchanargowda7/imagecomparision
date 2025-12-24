@@ -104,28 +104,45 @@ class EnterpriseSearchEngine:
         
         return len(vectors)
 
-    def search_face(self, query_img_path: str) -> dict:
-        if not self.known_face_encodings: return None
+    def search_faces(self, query_img_path: str) -> list:
+        """
+        Returns a list of matched faces (can be empty).
+        """
+        matches = []
+
+        if not self.known_face_encodings:
+            return matches
+
         try:
             image = face_recognition.load_image_file(query_img_path)
             unknown_encodings = face_recognition.face_encodings(image)
-            
-            if not unknown_encodings: return None
-            
-            query_face = unknown_encodings[0]
-            distances = face_recognition.face_distance(self.known_face_encodings, query_face)
-            best_match = None
-            best_score = -1
-            
-            for i, distance in enumerate(distances):
-                if distance < 0.55: 
-                    score = 1 - distance
-                    if score > best_score:
-                        best_score = score
-                        best_match = {"score": score, "metadata": {"path": self.known_face_paths[i]}}
-            return best_match
-        except:
-            return None
+
+            for query_face in unknown_encodings:
+                distances = face_recognition.face_distance(
+                    self.known_face_encodings, query_face
+                )
+
+                best_score = -1
+                best_idx = None
+
+                for i, distance in enumerate(distances):
+                    if distance < 0.55:
+                        score = 1 - distance
+                        if score > best_score:
+                            best_score = score
+                            best_idx = i
+
+                if best_idx is not None:
+                    matches.append({
+                        "score": best_score,
+                        "metadata": {"path": self.known_face_paths[best_idx]}
+                    })
+
+            return matches
+
+        except Exception:
+            return matches
+
 
     def search_visual(self, query_img: Image.Image) -> Tuple[int, float, dict]:
         """

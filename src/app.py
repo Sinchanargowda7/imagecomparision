@@ -31,7 +31,7 @@ if "preview_buffer" not in st.session_state:
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("⚙️ System Controls")
+    st.header("Controls")
     try:
         status = requests.get(f"{API_URL}/health", timeout=5).json()
         vec_count = status.get("vectors", 0)
@@ -51,8 +51,9 @@ with st.sidebar:
     # --- MANUAL UPLOAD ---
     if ingest_mode == "📂 Manual Upload":
         files = st.file_uploader(
-            "Drag & Drop Files",
+            "Drag & Drop Files (any type allowed)",
             accept_multiple_files=True,
+            type=None,  # ✅ allow all extensions
             key=f"uploader_{st.session_state.uploader_key}",
         )
         if files and st.button("Transmit to Server", type="primary"):
@@ -93,10 +94,9 @@ with st.sidebar:
                                 "id": i,
                                 "bytes": resp.content,
                                 "img": img,
-                                "selected": True   # 👈 IMPORTANT
+                                "selected": True
                             }
                         )
-
                 except Exception:
                     pass
 
@@ -107,7 +107,7 @@ with st.sidebar:
 
                     keep = st.checkbox(
                         "Keep",
-                        value=item["selected"],
+                        value=item.get("selected", True),
                         key=f"keep_{item['id']}"
                     )
                     st.session_state.preview_buffer[idx]["selected"] = keep
@@ -115,7 +115,7 @@ with st.sidebar:
                 if st.form_submit_button("🚀 Upload"):
                     for item in st.session_state.preview_buffer:
                         if not item["selected"]:
-                            continue  # 👈 SKIP UNCHECKED IMAGES
+                            continue
 
                         files_payload = {
                             "files": ("google.jpg", item["bytes"], "image/jpeg")
@@ -125,9 +125,8 @@ with st.sidebar:
                     st.session_state.preview_buffer = []
                     st.rerun()
 
-
 # --- MAIN UI ---
-st.title("Visual Recognition")
+st.title("Image Recognition")
 tab1, tab2 = st.tabs(["📷 Live Feed", "📂 File Analysis"])
 query_img = None
 
@@ -143,9 +142,15 @@ with tab1:
             query_img = Image.open(cam)
 
 with tab2:
-    up = st.file_uploader("Upload Query Image")
+    up = st.file_uploader(
+        "Upload Query File (any type allowed)",
+        type=None  # ✅ allow all extensions
+    )
     if up:
-        query_img = Image.open(up)
+        try:
+            query_img = Image.open(up)
+        except Exception:
+            st.error("Uploaded file is not a valid image.")
 
 # --- ANALYSIS ---
 if query_img:
@@ -156,8 +161,7 @@ if query_img:
     with st.spinner("Analyzing Scene..."):
         response = requests.post(f"{API_URL}/predict", files=api_files).json()
 
-    caption = response.get("caption", "No description")
-    face_match = response.get("face_match")
+    face_matches = response.get("face_matches", [])
     visual_match = response.get("visual_match")
 
     c_in, c_out = st.columns([1, 2])
@@ -168,16 +172,18 @@ if query_img:
 
     with c_out:
         st.subheader("Intelligence Report")
-        st.info(f"**AI Description:** {caption}")
         st.divider()
 
-        # --- FACE MATCH ---
-        if face_match:
-            img = base64_to_image(face_match["base64"])
-            if img:
-                st.success("✅ Identity Confirmed")
-                st.image(img, width=150)
-                st.caption(f"Face similarity: {face_match['score']:.2f}")
+        # --- MULTI FACE MATCH ---
+        if face_matches:
+            st.success("✅ Identity Matches Found")
+            cols = st.columns(len(face_matches))
+            for col, match in zip(cols, face_matches):
+                with col:
+                    img = base64_to_image(match.get("base64"))
+                    if img:
+                        st.image(img, width=150)
+                    st.caption(f"Face similarity: {match['score']:.2f}")
 
         # --- VISUAL MATCH ---
         elif visual_match:
